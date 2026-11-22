@@ -3,11 +3,11 @@
 OBS keeps the last N seconds in memory (its own "Clipper" profile, so other OBS setups stay untouched); this app sets
 it up for the PC it runs on, keeps the replay buffer on, and saves a clip on a hotkey or when you say "clip ça" /
 "clip that". Settings window + tray icon; runs at login with --background."""
-import ctypes, ctypes.wintypes, json, os, queue, re, socket, subprocess, sys, threading, time, uuid, winreg, winsound
+import ctypes, ctypes.wintypes, glob, json, os, queue, re, shutil, socket, subprocess, sys, threading, time, uuid, winreg, winsound
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-APP, VERSION = 'Clip Ça', '1.0.1'
+APP, VERSION = 'Clip Ça', '1.0.2'
 BASE = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(os.environ['APPDATA'], 'ClipCa')
 SETTINGS = os.path.join(DATA, 'settings.json')
@@ -45,7 +45,7 @@ DEFAULTS = {'clip_seconds': 60, 'folder': os.path.join(videos_dir(), 'Clips'), '
             'voice_fr': True, 'voice_en': True, 'chime': True, 'popup': True, 'screen': '', 'resolution': 'Native', 'fps': 60,
             'quality': 'High', 'encoder': '', 'desktop_device': 'default', 'desktop_db': 0.0,
             'mic_device': 'default', 'mic_db': 0.0, 'fx_noise': True, 'fx_gate': False, 'fx_comp': False,
-            'fx_limit': True}
+            'fx_limit': True, 'compress_clips': True}
 
 
 def log(msg):
@@ -70,6 +70,63 @@ def save_settings(s):
     with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(s, f, indent=2)
     os.replace(tmp, SETTINGS)
+
+
+# ---------- compression ----------
+COMPRESS_LOCK = threading.Lock()  # one clip at a time, so a burst of clips never floods the CPU
+
+
+def ffmpeg_dir():
+    found = shutil.which('ffmpeg') or next(iter(glob.glob(os.path.join(
+        os.environ.get('LOCALAPPDATA', ''), 'Microsoft', 'WinGet', 'Packages', 'Gyan.FFmpeg*', '*', 'bin',
+        'ffmpeg.exe'))), None)
+    return os.path.dirname(found) if found else None
+
+
+def duration(bin_dir, path):
+    out = subprocess.run([os.path.join(bin_dir, 'ffprobe'), '-v', 'error', '-show_entries', 'format=duration',
+                          '-of', 'csv=p=0', path], capture_output=True, text=True, creationflags=NOWIN)
+    return float(out.stdout.strip() or 0)
+
+
+def compress_clip(path):
+    """Re-encodes a saved clip to about a third of its size with no visible loss (x264 CRF 20, VMAF ~98).
+    The original is only replaced once the new file is complete, smaller and as long."""
+    bin_dir = ffmpeg_dir()
+    if not bin_dir:
+        log('compress skipped: ffmpeg not found (winget install Gyan.FFmpeg)')
+        return
+    tmp = path + '.part'  # not .mp4, so the clip list and the Discord button never pick up a half-written file
+    with COMPRESS_LOCK:
+        try:
+            r = subprocess.run([os.path.join(bin_dir, 'ffmpeg'), '-v', 'error', '-y', '-i', path, '-map', '0',
+                                '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-c:a', 'copy',
+                                '-movflags', '+faststart', '-f', 'mp4', tmp], capture_output=True, text=True,
+                               creationflags=NOWIN | subprocess.IDLE_PRIORITY_CLASS)  # idle: the game comes first
+            if r.returncode:
+                raise RuntimeError(r.stderr.strip()[-300:])
+            old, new = os.path.getsize(path), os.path.getsize(tmp)
+            if new >= old:
+                log(f'compress: kept original, already small ({old // 1_000_000} MB)')
+                return
+            if abs(duration(bin_dir, tmp) - duration(bin_dir, path)) > 1:
+                raise RuntimeError('compressed clip has the wrong length')
+            st = os.stat(path)
+            os.utime(tmp, (st.st_atime, st.st_mtime))  # keep the clip's date so lists stay in order
+            for attempt in range(10):
+                try:
+                    os.replace(tmp, path)
+                    break
+                except PermissionError:  # clip open in a player for a moment
+                    if attempt == 9:
+                        raise
+                    time.sleep(1)
+            log(f'compressed {os.path.basename(path)}: {old // 1_000_000} MB -> {new // 1_000_000} MB')
+        except Exception as e:
+            log(f'compress failed, original kept: {e!r}')
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
 
 
 # ---------- hotkey ----------
@@ -387,6 +444,9 @@ class Obs(threading.Thread):
             if self.app.settings['chime']:
                 winsound.PlaySound(CHIME_OK, winsound.SND_FILENAME | winsound.SND_ASYNC)
             self.app.clip_saved()
+            if self.app.settings['compress_clips'] and path and path != before:  # never re-compress an old clip
+                compress_clip(path)
+                self.app.ui.put(('clips', None))
         except Exception as e:
             log(f'save failed: {e!r}')
             winsound.PlaySound(CHIME_FAIL, winsound.SND_FILENAME | winsound.SND_ASYNC)
@@ -718,17 +778,19 @@ class App:
         ttk.Checkbutton(gen, text='Start with Windows (recommended, so you never miss a moment)',
                         variable=self.startup_var, command=self.toggle_startup).grid(row=1, column=0, columnspan=2,
                                                                                      sticky='w', pady=(12, 0))
+        self.check(gen, 'compress_clips', 'Compress clips after saving to save space (no visible loss)') \
+            .grid(row=2, column=0, columnspan=2, sticky='w', pady=(4, 0))
         ttk.Label(gen, text=f'{APP} {VERSION} · records with OBS Studio in its own "Clipper" profile, so your other '
                             'OBS scenes and settings stay as they are. Log: ' + LOG,
-                  style='Muted.TLabel', wraplength=500).grid(row=2, column=0, columnspan=2, sticky='w', pady=(24, 0))
-        ttk.Button(gen, text=f'Quit {APP}', command=self.quit).grid(row=3, column=0, sticky='w', pady=(16, 0))
+                  style='Muted.TLabel', wraplength=500).grid(row=3, column=0, columnspan=2, sticky='w', pady=(24, 0))
+        ttk.Button(gen, text=f'Quit {APP}', command=self.quit).grid(row=4, column=0, sticky='w', pady=(16, 0))
         self.refresh_how()
         self.refresh_clips()
 
     # ---- actions ----
     def changed(self, key, value):
         self.update_setting(key, value)
-        if key in ('voice_fr', 'voice_en', 'chime'):
+        if key in ('voice_fr', 'voice_en', 'chime', 'compress_clips'):  # no OBS restart needed
             self.refresh_how()
             return
         self.obs.apply_needed.set()

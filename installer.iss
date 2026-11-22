@@ -1,6 +1,6 @@
 ﻿; Clip Ça installer (Inno Setup 6). Built by build.ps1.
 #define AppName "Clip Ça"
-#define AppVersion "1.0.1"
+#define AppVersion "1.0.2"
 #define AppExe "ClipCa.exe"
 
 [Setup]

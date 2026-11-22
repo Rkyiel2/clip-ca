@@ -20,6 +20,10 @@ surveille en permanence : si le replay s'arrête, il le relance dans les 5 secon
 - **Enregistre les X dernières secondes** (15 s à 5 min) avec le son du PC **et** ton micro.
 - **Des fichiers souvent 60 à 80 % moins volumineux** que les clips NVIDIA, sans perte de qualité visible : au lieu
   d'un débit fixe, l'encodage s'adapte à ce qui bouge à l'écran. Une minute en 1080p60 pèse en général 10 à 30 Mo.
+- **Compression après chaque clip** (activée par défaut, onglet *General*) : le clip est réencodé en arrière-plan
+  pour prendre moins de place, sans perte visible (souvent 2 à 3 fois plus petit pour un jeu qui bouge). Ça tourne en
+  priorité basse pour ne pas gêner ton jeu, et l'original n'est remplacé qu'une fois la version compressée vérifiée.
+  Il faut ffmpeg (`winget install Gyan.FFmpeg`).
 - **Raccourci clavier** au choix (par défaut <kbd>Alt</kbd>+<kbd>F10</kbd>, comme NVIDIA ; par exemple
   <kbd>Alt</kbd>+<kbd>1</kbd>).
 - **Petite notification « Clipped! »** dans le coin de l'écran, comme NVIDIA, qui ne vole pas le focus de ton jeu.
@@ -59,8 +63,7 @@ Un plugin [Vencord](https://github.com/Vendicated/Vencord) ajoute **Upload Last 
 Discord. Il ouvre ton dernier clip, te laisse le couper (début / fin, facultatif) puis le compresse pour qu'il passe
 sous la limite de Discord (10 Mo par défaut, réglable dans les paramètres du plugin : 50 avec Nitro Basic, 500 avec
 Nitro). Si le clip (ou l'extrait coupé) tient déjà sous la limite, il est envoyé **sans perte**, sans réencodage ;
-l'extrait coupé commence alors à l'image clé la plus proche, jusqu'à ~4 s avant le début choisi. Sinon il est
-réencodé, avec ta carte NVIDIA si elle peut (pilote 610 ou plus récent), sinon avec le processeur.
+l'extrait coupé commence alors à l'image clé la plus proche, jusqu'à ~4 s avant le début choisi. Sinon il est réencodé, avec ta carte NVIDIA si elle peut (pilote 610 ou plus récent), sinon avec le processeur.
 
 Prérequis : [Git](https://git-scm.com) et [Node.js](https://nodejs.org). Dans le dossier du dépôt :
 
