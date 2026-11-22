@@ -53,6 +53,24 @@ Les clips arrivent dans `Vidéos\Clips` (modifiable dans l'onglet *General*).
 > **Tu streames avec OBS ?** Ne ferme pas OBS : change de profil et de collection de scènes dans OBS. Quand OBS est
 > sur un autre profil, le clipper se met en pause tout seul et reprend quand tu reviens sur « Clipper ».
 
+## Envoyer un clip sur Discord
+
+Un plugin [Vencord](https://github.com/Vendicated/Vencord) ajoute **Upload Last Clip** au menu <kbd>+</kbd> de
+Discord. Il ouvre ton dernier clip, te laisse le couper (début / fin, facultatif) puis le compresse pour qu'il passe
+sous la limite de Discord (10 Mo par défaut, réglable dans les paramètres du plugin : 50 avec Nitro Basic, 500 avec
+Nitro). La compression utilise ta carte NVIDIA si elle peut, sinon le processeur.
+
+Prérequis : [Git](https://git-scm.com) et [Node.js](https://nodejs.org). Dans le dossier du dépôt :
+
+```powershell
+powershell -ExecutionPolicy Bypass -File discord\install.ps1
+```
+
+Le script installe ffmpeg et pnpm s'il les faut, télécharge Vencord dans `%USERPROFILE%\Apps\Vencord`, le compile
+avec le plugin et l'injecte dans Discord (Discord se ferme pendant l'installation). Il crée aussi une tâche planifiée
+**Keep Vencord** qui réinjecte Vencord après chaque mise à jour de Discord (à l'ouverture de session puis toutes les
+5 minutes). Ne supprime pas le dossier Vencord : Discord le charge à chaque démarrage.
+
 ## Compiler soi-même
 
 Prérequis : Windows 10/11, [Python 3.12](https://www.python.org), [Inno Setup 6](https://jrsoftware.org/isinfo.php).
@@ -78,6 +96,9 @@ Pour lancer depuis le code sans compiler : `.\venv\Scripts\python.exe clipper_ap
 | `clipper_app.py` | Toute l'application : fenêtre, icône, raccourci, reconnaissance vocale, pilotage d'OBS |
 | `build.ps1` | Télécharge les modèles, compile l'exe et l'installateur |
 | `installer.iss` | Script de l'installateur (Inno Setup) |
+| `discord\uploadLastClip\` | Plugin Vencord : bouton, fenêtre de découpe (`index.tsx`), compression ffmpeg (`native.ts`) |
+| `discord\install.ps1` | Installe Vencord avec le plugin et la tâche **Keep Vencord** |
+| `discord\keep-vencord.ps1` | Réinjecte Vencord quand une mise à jour de Discord l'a enlevé |
 
 L'application parle à OBS par son WebSocket intégré (activé automatiquement, protégé par mot de passe, en local).
 Les réglages sont dans `%APPDATA%\ClipCa\settings.json` et le journal dans `clipper.log` au même endroit.
@@ -90,6 +111,8 @@ Les réglages sont dans `%APPDATA%\ClipCa\settings.json` et le journal dans `cli
 [Vosk](https://alphacephei.com/vosk/) et ses modèles (Apache-2.0),
 [sounddevice](https://github.com/spatialaudio/python-sounddevice) (MIT),
 [pystray](https://github.com/moses-palmer/pystray) (LGPL-3.0),
-[Pillow](https://python-pillow.org) (MIT-CMU).
+[Pillow](https://python-pillow.org) (MIT-CMU),
+[Vencord](https://github.com/Vendicated/Vencord) (GPL-3.0, téléchargé à part),
+[FFmpeg](https://ffmpeg.org) (GPL, installé à part).
 
-Projet de fan, sans lien avec NVIDIA ou OBS.
+Projet de fan, sans lien avec NVIDIA, OBS ou Discord.
