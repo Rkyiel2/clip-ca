@@ -63,7 +63,10 @@ export async function readClip(_, path: string) {
     return new Uint8Array(await readFile(checkPath(path)));
 }
 
-/** Trims to [start, end] seconds and re-encodes to fit under maxBytes. Returns the mp4 bytes. */
+/**
+ * Trims to [start, end] seconds and fits it under maxBytes. Returns the mp4 bytes.
+ * Lossless when it can be (original file, or a stream-copied cut); re-encodes only when that is still too big.
+ */
 export async function compressClip(_, path: string, start: number, end: number, duration: number, maxBytes: number) {
     path = checkPath(path);
     const trimmed = start > 0.05 || end < duration - 0.05;
@@ -76,6 +79,13 @@ export async function compressClip(_, path: string, start: number, end: number, 
     let useNvenc = true;
 
     try {
+        if (trimmed) {
+            // lossless cut: streams copied untouched, so the start snaps back to the nearest keyframe
+            await run(["-y", "-ss", String(start), "-to", String(end), "-i", path, "-c", "copy",
+                "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", out]);
+            if (statSync(out).size <= maxBytes) return new Uint8Array(await readFile(out));
+        }
+
         for (let attempt = 0; attempt < 4; attempt++) {
             const audioKbps = totalKbps > 1000 ? 128 : totalKbps > 300 ? 96 : 48;
             const videoKbps = Math.max(50, Math.floor(totalKbps - audioKbps));

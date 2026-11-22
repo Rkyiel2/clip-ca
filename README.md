@@ -58,7 +58,9 @@ Les clips arrivent dans `Vidéos\Clips` (modifiable dans l'onglet *General*).
 Un plugin [Vencord](https://github.com/Vendicated/Vencord) ajoute **Upload Last Clip** au menu <kbd>+</kbd> de
 Discord. Il ouvre ton dernier clip, te laisse le couper (début / fin, facultatif) puis le compresse pour qu'il passe
 sous la limite de Discord (10 Mo par défaut, réglable dans les paramètres du plugin : 50 avec Nitro Basic, 500 avec
-Nitro). La compression utilise ta carte NVIDIA si elle peut, sinon le processeur.
+Nitro). Si le clip (ou l'extrait coupé) tient déjà sous la limite, il est envoyé **sans perte**, sans réencodage ;
+l'extrait coupé commence alors à l'image clé la plus proche, jusqu'à ~4 s avant le début choisi. Sinon il est
+réencodé, avec ta carte NVIDIA si elle peut (pilote 610 ou plus récent), sinon avec le processeur.
 
 Prérequis : [Git](https://git-scm.com) et [Node.js](https://nodejs.org). Dans le dossier du dépôt :
 
