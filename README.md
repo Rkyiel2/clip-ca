@@ -18,6 +18,8 @@ surveille en permanence : si le replay s'arrête, il le relance dans les 5 secon
 ## Ce qu'il fait
 
 - **Enregistre les X dernières secondes** (15 s à 5 min) avec le son du PC **et** ton micro.
+- **Des fichiers souvent 60 à 80 % moins volumineux** que les clips NVIDIA, sans perte de qualité visible : au lieu
+  d'un débit fixe, l'encodage s'adapte à ce qui bouge à l'écran. Une minute en 1080p60 pèse en général 10 à 30 Mo.
 - **Raccourci clavier** au choix (par défaut <kbd>Alt</kbd>+<kbd>F10</kbd>, comme NVIDIA).
 - **Commande vocale** : dis « clip ça » (français) ou « clip that » (anglais). La reconnaissance tourne
   **hors ligne** sur ton PC, rien n'est envoyé sur internet.
@@ -34,7 +36,8 @@ surveille en permanence : si le replay s'arrête, il le relance dans les 5 secon
 
 ## Installation
 
-1. Télécharge `ClipCa-Setup-x.y.z.exe` dans les [Releases](../../releases/latest).
+1. Télécharge `ClipCa-Setup-x.y.z.exe` dans les [Releases](../../releases/latest), ou directement la version
+   compilée dans le dossier [`installateur/`](installateur/) de ce dépôt.
 2. Lance-le. L'installateur n'est pas signé, donc Windows SmartScreen affiche un avertissement : clique sur
    **Informations complémentaires**, puis **Exécuter quand même**.
 3. Il te faut [OBS Studio](https://obsproject.com). S'il n'est pas installé, l'application propose un bouton
