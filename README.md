@@ -20,7 +20,9 @@ surveille en permanence : si le replay s'arrête, il le relance dans les 5 secon
 - **Enregistre les X dernières secondes** (15 s à 5 min) avec le son du PC **et** ton micro.
 - **Des fichiers souvent 60 à 80 % moins volumineux** que les clips NVIDIA, sans perte de qualité visible : au lieu
   d'un débit fixe, l'encodage s'adapte à ce qui bouge à l'écran. Une minute en 1080p60 pèse en général 10 à 30 Mo.
-- **Raccourci clavier** au choix (par défaut <kbd>Alt</kbd>+<kbd>F10</kbd>, comme NVIDIA).
+- **Raccourci clavier** au choix (par défaut <kbd>Alt</kbd>+<kbd>F10</kbd>, comme NVIDIA ; par exemple
+  <kbd>Alt</kbd>+<kbd>1</kbd>).
+- **Petite notification « Clipped! »** dans le coin de l'écran, comme NVIDIA, qui ne vole pas le focus de ton jeu.
 - **Commande vocale** : dis « clip ça » (français) ou « clip that » (anglais). La reconnaissance tourne
   **hors ligne** sur ton PC, rien n'est envoyé sur internet.
 - **Démarre avec Windows**, discret dans la barre des tâches (icône près de l'horloge).

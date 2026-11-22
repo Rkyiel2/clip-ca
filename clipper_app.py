@@ -7,7 +7,7 @@ import ctypes, ctypes.wintypes, json, os, queue, re, socket, subprocess, sys, th
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-APP, VERSION = 'Clip Ça', '1.0.0'
+APP, VERSION = 'Clip Ça', '1.0.1'
 BASE = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(os.environ['APPDATA'], 'ClipCa')
 SETTINGS = os.path.join(DATA, 'settings.json')
@@ -42,7 +42,7 @@ def videos_dir():
 
 
 DEFAULTS = {'clip_seconds': 60, 'folder': os.path.join(videos_dir(), 'Clips'), 'hotkey': 'Alt+F10',
-            'voice_fr': True, 'voice_en': True, 'chime': True, 'screen': '', 'resolution': 'Native', 'fps': 60,
+            'voice_fr': True, 'voice_en': True, 'chime': True, 'popup': True, 'screen': '', 'resolution': 'Native', 'fps': 60,
             'quality': 'High', 'encoder': '', 'desktop_device': 'default', 'desktop_db': 0.0,
             'mic_device': 'default', 'mic_db': 0.0, 'fx_noise': True, 'fx_gate': False, 'fx_comp': False,
             'fx_limit': True}
@@ -76,7 +76,9 @@ def save_settings(s):
 MODS = {'Ctrl': 2, 'Alt': 1, 'Shift': 4}
 NAMED_VK = {'Pause': 0x13, 'Insert': 0x2D, 'Delete': 0x2E, 'Home': 0x24, 'End': 0x23, 'PageUp': 0x21,
             'PageDown': 0x22, 'ScrollLock': 0x91, 'PrintScreen': 0x2C, 'Space': 0x20}
-TK_NAMES = {'Prior': 'PageUp', 'Next': 'PageDown', 'Scroll_Lock': 'ScrollLock', 'Print': 'PrintScreen', 'space': 'Space'}
+VK_NAMES = {**{0x70 + i: f'F{i + 1}' for i in range(24)}, **{vk: name for name, vk in NAMED_VK.items()},
+            **{vk: chr(vk) for vk in [*range(0x30, 0x3A), *range(0x41, 0x5B)]}}
+MOD_VKS = (('Ctrl', 0x11), ('Alt', 0x12), ('Shift', 0x10))
 
 
 def parse_hotkey(text):
@@ -94,12 +96,11 @@ def parse_hotkey(text):
     return (flags, NAMED_VK[key]) if key in NAMED_VK else None
 
 
-def hotkey_from_tk(event):
-    key = TK_NAMES.get(event.keysym, event.keysym)
-    key = key.upper() if len(key) == 1 else key
-    mods = [n for n, bit in (('Ctrl', 0x4), ('Alt', 0x20000), ('Shift', 0x1)) if event.state & bit]
-    text = '+'.join(mods + [key])
-    return text if parse_hotkey(text) else None
+def keys_down():
+    """The combo held right now, read from the keyboard itself: Tk never sees Alt+<key> (Windows keeps it for menus)."""
+    down = lambda vk: ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000
+    key = next((name for vk, name in VK_NAMES.items() if down(vk)), None)
+    return key and '+'.join([m for m, vk in MOD_VKS if down(vk)] + [key])
 
 
 class Hotkey(threading.Thread):
@@ -390,6 +391,7 @@ class Obs(threading.Thread):
             log(f'save failed: {e!r}')
             winsound.PlaySound(CHIME_FAIL, winsound.SND_FILENAME | winsound.SND_ASYNC)
             self.app.status('save_failed')
+            self.app.ui.put(('toast', False))
 
 
 # ---------- voice ----------
@@ -482,6 +484,7 @@ class App:
     def clip_saved(self):
         self.ui.put(('status', 'saved'))
         self.ui.put(('clips', None))
+        self.ui.put(('toast', True))
 
     def lists_changed(self):
         self.ui.put(('lists', None))
@@ -513,7 +516,50 @@ class App:
                                                                'uses Alt+F10). Pick another one.')
             elif kind == 'show':
                 self.show()
+            elif kind == 'toast' and self.settings['popup']:
+                self.toast(val)
         self.root.after(150, self.pump)
+
+    def toast(self, ok):
+        """NVIDIA-style notice in the top-right corner: never takes focus, clicks go through it, fades away."""
+        if getattr(self, 'popup', None):
+            self.popup.destroy()
+        t = self.popup = tk.Toplevel(self.root)
+        t.overrideredirect(True)
+        t.attributes('-topmost', True)
+        t.attributes('-alpha', 0.0)
+        box = tk.Frame(t, bg=CARD, highlightbackground=ACCENT if ok else '#f31260', highlightthickness=2)
+        box.pack()
+        tk.Label(box, text='✔' if ok else '✖', bg=CARD, fg='#3ecf8e' if ok else '#f31260',
+                 font=('Segoe UI', 20)).pack(side='left', padx=(16, 10), pady=12)
+        words = tk.Frame(box, bg=CARD)
+        words.pack(side='left', padx=(0, 20), pady=12)
+        tk.Label(words, text='Clipped!' if ok else 'Clip failed', bg=CARD, fg=FG,
+                 font=('Segoe UI Semibold', 12)).pack(anchor='w')
+        tk.Label(words, text=f'Last {self.settings["clip_seconds"]} seconds saved' if ok else 'Open Clip Ça to see why',
+                 bg=CARD, fg=MUTED, font=('Segoe UI', 9)).pack(anchor='w')
+        t.update_idletasks()
+        t.geometry(f'+{t.winfo_screenwidth() - t.winfo_reqwidth() - 24}+24')
+        try:  # no focus steal, no taskbar button, click-through
+            hwnd = int(t.wm_frame(), 16)
+            ex = ctypes.windll.user32.GetWindowLongW(hwnd, -20)
+            ctypes.windll.user32.SetWindowLongW(hwnd, -20, ex | 0x08000000 | 0x80 | 0x20)
+        except (OSError, ValueError):
+            pass
+        def fade(step=0):
+            if not t.winfo_exists():
+                return
+            if step < 8:  # fade in
+                t.attributes('-alpha', 0.95 * (step + 1) / 8)
+                t.after(18, fade, step + 1)
+            elif step == 8:  # hold
+                t.after(2200, fade, 9)
+            elif step < 20:  # fade out
+                t.attributes('-alpha', 0.95 * (20 - step) / 11)
+                t.after(25, fade, step + 1)
+            else:
+                t.destroy()
+        fade()
 
     # ---- look ----
     def style(self):
@@ -659,6 +705,8 @@ class App:
                   style='Muted.TLabel').grid(row=5, column=0, columnspan=2, sticky='w', pady=(4, 0))
         self.check(ctl, 'chime', 'Play a sound when a clip is saved').grid(row=6, column=0, columnspan=2,
                                                                          sticky='w', pady=(16, 0))
+        self.check(ctl, 'popup', 'Show a "Clipped!" popup in the corner').grid(row=7, column=0, columnspan=2,
+                                                                              sticky='w')
 
         gen = self.page(nb, 'General')
         folder = ttk.Frame(gen, style='Card.TFrame')
@@ -728,17 +776,25 @@ class App:
             os.startfile(sel[0])
 
     def capture_hotkey(self):
-        self.hotkey_btn.configure(text='Press keys…')
-        def got(event):
-            combo = hotkey_from_tk(event)
-            if not combo:
-                return  # a lone modifier or an unsupported key: keep waiting
-            self.root.unbind('<KeyPress>')
-            self.hotkey_btn.configure(text=combo)
-            self.update_setting('hotkey', combo)
-            self.hotkey.changed()
-            self.refresh_how()
-        self.root.bind('<KeyPress>', got)
+        self.hotkey_btn.configure(text='Press keys… (Esc cancels)')
+        armed = [False]  # wait until every key is up, so the key that pressed the button isn't taken
+        seen = [None, 0]  # the same combo 3 polls running: apps that tap Ctrl to tame Alt can't sneak one in
+        def poll():
+            if ctypes.windll.user32.GetAsyncKeyState(0x1B) & 0x8000:  # Esc
+                self.hotkey_btn.configure(text=self.settings['hotkey'])
+                return
+            combo = keys_down()
+            seen[:] = [combo, seen[1] + 1 if combo == seen[0] else 1]
+            if not armed[0]:
+                armed[0] = combo is None
+            elif combo and seen[1] >= 3 and parse_hotkey(combo):
+                self.hotkey_btn.configure(text=combo)
+                self.update_setting('hotkey', combo)
+                self.hotkey.changed()
+                self.refresh_how()
+                return
+            self.root.after(20, poll)
+        poll()
 
     def pick_folder(self):
         d = filedialog.askdirectory(initialdir=self.settings['folder'])
@@ -818,6 +874,7 @@ def selftest():
     assert parse_hotkey('Alt+F10') == (1, 0x79)
     assert parse_hotkey('Ctrl+Shift+S') == (6, ord('S'))
     assert parse_hotkey('S') is None and parse_hotkey('Hyper+F1') is None
+    assert parse_hotkey('Alt+1') == (1, 0x31) and VK_NAMES[0x31] == '1' and VK_NAMES[0x79] == 'F10'
     assert out_size(1920, 1080, '720p') == (1280, 720) and out_size(1920, 1080, '1440p') == (1920, 1080)
     assert out_size(2560, 1080, '720p') == (1706, 720)
     import vosk
