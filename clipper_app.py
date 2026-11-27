@@ -11,7 +11,7 @@ WIN = sys.platform == 'win32'
 if WIN:
     import ctypes.wintypes, winreg, winsound
 
-APP, VERSION = 'Clip Ça', '1.0.2'
+APP, VERSION = 'Clip Ça', '1.0.3'
 BASE = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
 CONFIG_HOME = os.environ['APPDATA'] if WIN else os.environ.get('XDG_CONFIG_HOME') or os.path.expanduser('~/.config')
 DATA = os.path.join(CONFIG_HOME, 'ClipCa')
