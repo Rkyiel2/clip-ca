@@ -13,7 +13,8 @@ const VIDEO_EXT = new Set([".mp4", ".mkv", ".mov", ".webm"]);
 
 function clipFolder() {
     try {
-        const s = JSON.parse(readFileSync(join(process.env.APPDATA!, "ClipCa", "settings.json"), "utf8"));
+        const config = process.platform === "win32" ? process.env.APPDATA! : process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+        const s = JSON.parse(readFileSync(join(config, "ClipCa", "settings.json"), "utf8"));
         if (s.folder) return normalize(s.folder);
     } catch { }
     return join(homedir(), "Videos", "Clips");

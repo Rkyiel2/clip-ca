@@ -3,7 +3,7 @@
 <h1 align="center">Clip Ça</h1>
 
 <p align="center">
-  Un clipper pour Windows qui ne rate rien : il garde les dernières secondes de ton écran en mémoire
+  Un clipper pour Windows et Linux qui ne rate rien : il garde les dernières secondes de ton écran en mémoire
   et les enregistre quand tu appuies sur un raccourci ou quand tu dis <b>« clip ça »</b>.
 </p>
 
@@ -23,7 +23,7 @@ surveille en permanence : si le replay s'arrête, il le relance dans les 5 secon
 - **Compression après chaque clip** (activée par défaut, onglet *General*) : le clip est réencodé en arrière-plan
   pour prendre moins de place, sans perte visible (souvent 2 à 3 fois plus petit pour un jeu qui bouge). Ça tourne en
   priorité basse pour ne pas gêner ton jeu, et l'original n'est remplacé qu'une fois la version compressée vérifiée.
-  Il faut ffmpeg (`winget install Gyan.FFmpeg`).
+  Il faut ffmpeg (`winget install Gyan.FFmpeg` ; sous Linux, l'installateur s'en occupe).
 - **Raccourci clavier** au choix (par défaut <kbd>Alt</kbd>+<kbd>F10</kbd>, comme NVIDIA ; par exemple
   <kbd>Alt</kbd>+<kbd>1</kbd>).
 - **Petite notification « Clipped! »** dans le coin de l'écran, comme NVIDIA, qui ne vole pas le focus de ton jeu.
@@ -56,6 +56,30 @@ Les clips arrivent dans `Vidéos\Clips` (modifiable dans l'onglet *General*).
 
 > **Tu streames avec OBS ?** Ne ferme pas OBS : change de profil et de collection de scènes dans OBS. Quand OBS est
 > sur un autre profil, le clipper se met en pause tout seul et reprend quand tu reviens sur « Clipper ».
+
+### Linux (Linux Mint XFCE)
+
+Fait pour **Linux Mint XFCE** (session X11) ; marche aussi sur Ubuntu, Debian et les autres distributions basées
+dessus. Dans un terminal :
+
+```bash
+git clone https://github.com/Rkyiel2/clip-ca.git
+cd clip-ca
+bash linux/install.sh
+```
+
+Le script demande ton mot de passe une fois (apt), installe OBS Studio depuis son PPA officiel (celui de Mint n'a pas
+le WebSocket dont Clip Ça a besoin), ffmpeg et le reste, puis met Clip Ça dans `~/.local/share/clipca`, dans le menu
+(*Son et vidéo*) et au démarrage de la session. Relance-le pour mettre à jour ; `bash linux/install.sh --uninstall`
+pour le retirer (tes clips et OBS restent).
+
+Différences avec Windows :
+- Raccourci par défaut <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>C</kbd> : <kbd>Alt</kbd>+<kbd>F10</kbd> agrandit les
+  fenêtres dans XFCE. Le raccourci ne marche qu'en X11 (pas sous Wayland) ; la voix et les boutons marchent partout.
+- Sur un clavier AZERTY, les combinaisons avec les chiffres du haut ne sont pas reconnues : prends une lettre ou une
+  touche F.
+- La capture d'écran filme l'écran entier (pas de « capture de jeu » sous Linux), jeux en plein écran compris.
+- Encodeur : NVIDIA (NVENC) si tu as une carte NVIDIA avec son pilote, sinon le processeur.
 
 ## Envoyer un clip sur Discord
 
@@ -101,6 +125,7 @@ Pour lancer depuis le code sans compiler : `.\venv\Scripts\python.exe clipper_ap
 | `clipper_app.py` | Toute l'application : fenêtre, icône, raccourci, reconnaissance vocale, pilotage d'OBS |
 | `build.ps1` | Télécharge les modèles, compile l'exe et l'installateur |
 | `installer.iss` | Script de l'installateur (Inno Setup) |
+| `linux/install.sh` | Installation sous Linux (Mint, Ubuntu, Debian) |
 | `discord\uploadLastClip\` | Plugin Vencord : bouton, fenêtre de découpe (`index.tsx`), compression ffmpeg (`native.ts`) |
 | `discord\install.ps1` | Installe Vencord avec le plugin et la tâche **Keep Vencord** |
 | `discord\keep-vencord.ps1` | Réinjecte Vencord quand une mise à jour de Discord l'a enlevé |

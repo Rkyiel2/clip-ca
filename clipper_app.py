@@ -1,26 +1,40 @@
-"""Clip Ça: a replay-buffer clipper for Windows, built on OBS Studio.
+"""Clip Ça: a replay-buffer clipper for Windows and Linux (X11, made for Linux Mint XFCE), built on OBS Studio.
 
 OBS keeps the last N seconds in memory (its own "Clipper" profile, so other OBS setups stay untouched); this app sets
 it up for the PC it runs on, keeps the replay buffer on, and saves a clip on a hotkey or when you say "clip ça" /
 "clip that". Settings window + tray icon; runs at login with --background."""
-import ctypes, ctypes.wintypes, glob, json, os, queue, re, shutil, socket, subprocess, sys, threading, time, uuid, winreg, winsound
+import ctypes, glob, json, os, queue, re, shutil, socket, subprocess, sys, threading, time, uuid
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
+WIN = sys.platform == 'win32'
+if WIN:
+    import ctypes.wintypes, winreg, winsound
+
 APP, VERSION = 'Clip Ça', '1.0.2'
 BASE = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-DATA = os.path.join(os.environ['APPDATA'], 'ClipCa')
+CONFIG_HOME = os.environ['APPDATA'] if WIN else os.environ.get('XDG_CONFIG_HOME') or os.path.expanduser('~/.config')
+DATA = os.path.join(CONFIG_HOME, 'ClipCa')
 SETTINGS = os.path.join(DATA, 'settings.json')
 LOG = os.path.join(DATA, 'clipper.log')
-OBS_CFG = os.path.join(os.environ['APPDATA'], 'obs-studio')
+OBS_CFG = os.path.join(CONFIG_HOME, 'obs-studio')
 WS_CFG = os.path.join(OBS_CFG, 'plugin_config', 'obs-websocket', 'config.json')
 PROFILE_INI = os.path.join(OBS_CFG, 'basic', 'profiles', 'Clipper', 'basic.ini')
 COLLECTION = os.path.join(OBS_CFG, 'basic', 'scenes', 'Clipper.json')
 RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
+AUTOSTART = os.path.join(CONFIG_HOME, 'autostart', 'clipca.desktop')  # Linux login item
 PORT = 47811  # single instance: a second launch asks the first to show its window
-NOWIN = subprocess.CREATE_NO_WINDOW
-CHIME_OK = r'C:\Windows\Media\Windows Notify System Generic.wav'
-CHIME_FAIL = r'C:\Windows\Media\Windows Critical Stop.wav'
+NOWIN = subprocess.CREATE_NO_WINDOW if WIN else 0
+# Background ffmpeg: idle priority on Windows, nice 19 on Linux, so the game comes first
+LOW_PRIORITY = {'creationflags': NOWIN | subprocess.IDLE_PRIORITY_CLASS} if WIN else {'preexec_fn': lambda: os.nice(19)}
+CHIME_OK = r'C:\Windows\Media\Windows Notify System Generic.wav' if WIN else \
+    '/usr/share/sounds/freedesktop/stereo/complete.oga'
+CHIME_FAIL = r'C:\Windows\Media\Windows Critical Stop.wav' if WIN else \
+    '/usr/share/sounds/freedesktop/stereo/dialog-error.oga'
+# OBS sources: screen and audio capture have different plugins per OS (Linux: X11 screen + PulseAudio/PipeWire)
+SCREEN_SRC, SCREEN_PROP = ('monitor_capture', 'monitor_id') if WIN else ('xshm_input', 'screen')
+DESK_SRC, MIC_SRC = ('wasapi_output_capture', 'wasapi_input_capture') if WIN else \
+    ('pulse_output_capture', 'pulse_input_capture')
 PHRASES = {'voice_fr': ('vosk-model-small-fr-0.22', 'clip ça'), 'voice_en': ('vosk-model-small-en-us-0.15', 'clip that')}
 QUALITY = {'High': 'Small', 'Very high': 'HQ'}  # OBS simple-mode names
 RESOLUTIONS = ['Native', '1440p', '1080p', '900p', '720p', '480p']
@@ -35,13 +49,31 @@ FX = [('fx_noise', 'JC Noise suppression', 'noise_suppress_filter_v2', {'method'
 
 def videos_dir():
     try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders') as k:
-            return winreg.QueryValueEx(k, 'My Video')[0]
+        if WIN:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                r'Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders') as k:
+                return winreg.QueryValueEx(k, 'My Video')[0]
+        out = subprocess.run(['xdg-user-dir', 'VIDEOS'], capture_output=True, text=True).stdout.strip()
+        if out and out != os.path.expanduser('~'):  # xdg-user-dir answers $HOME when the folder isn't set
+            return out
     except OSError:
-        return os.path.join(os.path.expanduser('~'), 'Videos')
+        pass
+    return os.path.join(os.path.expanduser('~'), 'Videos')
 
 
-DEFAULTS = {'clip_seconds': 60, 'folder': os.path.join(videos_dir(), 'Clips'), 'hotkey': 'Alt+F10',
+def play(sound):
+    if WIN:
+        winsound.PlaySound(sound, winsound.SND_FILENAME | winsound.SND_ASYNC)
+    elif os.path.exists(sound) and shutil.which('paplay'):
+        subprocess.Popen(['paplay', sound], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def open_path(path):
+    os.startfile(path) if WIN else subprocess.Popen(['xdg-open', path])
+
+
+DEFAULTS = {'clip_seconds': 60, 'folder': os.path.join(videos_dir(), 'Clips'),
+            'hotkey': 'Alt+F10' if WIN else 'Ctrl+Alt+C',  # Alt+F10 maximizes windows in XFCE
             'voice_fr': True, 'voice_en': True, 'chime': True, 'popup': True, 'screen': '', 'resolution': 'Native', 'fps': 60,
             'quality': 'High', 'encoder': '', 'desktop_device': 'default', 'desktop_db': 0.0,
             'mic_device': 'default', 'mic_db': 0.0, 'fx_noise': True, 'fx_gate': False, 'fx_comp': False,
@@ -94,7 +126,7 @@ def compress_clip(path):
     The original is only replaced once the new file is complete, smaller and as long."""
     bin_dir = ffmpeg_dir()
     if not bin_dir:
-        log('compress skipped: ffmpeg not found (winget install Gyan.FFmpeg)')
+        log('compress skipped: ffmpeg not found (' + ('winget install Gyan.FFmpeg' if WIN else 'sudo apt install ffmpeg') + ')')
         return
     tmp = path + '.part'  # not .mp4, so the clip list and the Discord button never pick up a half-written file
     with COMPRESS_LOCK:
@@ -102,7 +134,7 @@ def compress_clip(path):
             r = subprocess.run([os.path.join(bin_dir, 'ffmpeg'), '-v', 'error', '-y', '-i', path, '-map', '0',
                                 '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-c:a', 'copy',
                                 '-movflags', '+faststart', '-f', 'mp4', tmp], capture_output=True, text=True,
-                               creationflags=NOWIN | subprocess.IDLE_PRIORITY_CLASS)  # idle: the game comes first
+                               **LOW_PRIORITY)
             if r.returncode:
                 raise RuntimeError(r.stderr.strip()[-300:])
             old, new = os.path.getsize(path), os.path.getsize(tmp)
@@ -188,8 +220,75 @@ class Hotkey(threading.Thread):
             ctypes.windll.user32.PostThreadMessageW(self.tid, self.WM_REREGISTER, 0, 0)
 
 
+class LinuxHotkey:
+    """Linux (X11) has no RegisterHotKey: follow the keyboard with pynput and fire when the held combo matches.
+    The keys still reach the focused app, like NVIDIA's Alt+F10 on Windows. Also tells the hotkey picker what's held."""
+
+    def __init__(self, get_combo, on_press, on_status):
+        self.get_combo, self.on_press, self.on_status = get_combo, on_press, on_status
+        self.mods, self.key, self.esc, self.fired = set(), None, False, 0.0
+
+    def start(self):
+        try:
+            from pynput import keyboard
+            K = keyboard.Key
+            mods = {'Alt': ('alt', 'alt_l', 'alt_r', 'alt_gr'), 'Ctrl': ('ctrl', 'ctrl_l', 'ctrl_r'),
+                    'Shift': ('shift', 'shift_l', 'shift_r')}
+            self.mod_of = {getattr(K, n): m for m, names in mods.items() for n in names if hasattr(K, n)}
+            named = {'pause': 'Pause', 'insert': 'Insert', 'delete': 'Delete', 'home': 'Home', 'end': 'End',
+                     'page_up': 'PageUp', 'page_down': 'PageDown', 'scroll_lock': 'ScrollLock',
+                     'print_screen': 'PrintScreen', 'space': 'Space', **{f'f{i}': f'F{i}' for i in range(1, 25)}}
+            self.name_of = {getattr(K, n): v for n, v in named.items() if hasattr(K, n)}
+            self.esc_key = K.esc
+            listener = keyboard.Listener(on_press=self._down, on_release=self._up)
+            listener.daemon = True
+            listener.start()
+            self.changed()
+        except Exception as e:  # no X11 session (Wayland, SSH): voice and the buttons still work
+            log(f'hotkey: {e!r}')
+            self.on_status(False)
+
+    def _name(self, key):
+        if key in self.name_of:
+            return self.name_of[key]
+        c = (getattr(key, 'char', None) or '').upper()
+        # shortcut: AZERTY digits arrive as &é"'( so only letters, F-keys and named keys work there
+        return c if re.fullmatch(r'[A-Z0-9]', c) else None
+
+    def combo(self):
+        return self.key and '+'.join([m for m in ('Ctrl', 'Alt', 'Shift') if m in self.mods] + [self.key])
+
+    def _down(self, key, *_):
+        if key == self.esc_key:
+            self.esc = True
+        elif key in self.mod_of:
+            self.mods.add(self.mod_of[key])
+        elif self._name(key):
+            self.key = self._name(key)
+            if self.combo() == self.get_combo() and time.time() - self.fired > 1:  # X11 auto-repeat re-sends keys
+                self.fired = time.time()
+                self.on_press()
+
+    def _up(self, key, *_):
+        if key == self.esc_key:
+            self.esc = False
+        elif key in self.mod_of:
+            self.mods.discard(self.mod_of[key])
+        elif self._name(key) == self.key:
+            self.key = None
+
+    def changed(self):
+        self.on_status(bool(parse_hotkey(self.get_combo())))
+
+
+if not WIN:
+    Hotkey = LinuxHotkey
+
+
 # ---------- OBS ----------
 def find_obs():
+    if not WIN:
+        return shutil.which('obs')
     for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
         try:
             with winreg.OpenKey(root, r'SOFTWARE\OBS Studio') as k:
@@ -203,14 +302,22 @@ def find_obs():
 
 
 def obs_running():
+    if not WIN:
+        return subprocess.run(['pgrep', '-x', 'obs'], capture_output=True).returncode == 0
     out = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq obs64.exe', '/NH'], capture_output=True, text=True,
                          creationflags=NOWIN).stdout
     return 'obs64.exe' in out
 
 
 def detect_encoder():
-    out = subprocess.run(['powershell', '-NoProfile', '-Command', '(Get-CimInstance Win32_VideoController).Name'],
-                         capture_output=True, text=True, creationflags=NOWIN).stdout.lower()
+    try:
+        cmd = ['powershell', '-NoProfile', '-Command', '(Get-CimInstance Win32_VideoController).Name'] if WIN \
+            else ['lspci']
+        out = subprocess.run(cmd, capture_output=True, text=True, creationflags=NOWIN).stdout.lower()
+    except OSError:
+        return 'x264'
+    if not WIN:  # OBS's simple mode only offers NVENC as a GPU encoder on Linux
+        return 'nvenc' if any('nvidia' in l for l in out.splitlines() if 'vga' in l or '3d' in l) else 'x264'
     for word, enc in (('nvidia', 'nvenc'), ('radeon', 'amd'), ('amd', 'amd'), ('intel', 'qsv')):
         if word in out:
             return enc
@@ -218,8 +325,18 @@ def detect_encoder():
 
 
 def primary_size():
-    u = ctypes.windll.user32
-    return u.GetSystemMetrics(0), u.GetSystemMetrics(1)
+    if WIN:
+        u = ctypes.windll.user32
+        return u.GetSystemMetrics(0), u.GetSystemMetrics(1)
+    try:
+        out = subprocess.run(['xrandr', '--query'], capture_output=True, text=True).stdout
+        m = re.search(r' connected primary (\d+)x(\d+)', out) or re.search(r' connected (\d+)x(\d+)', out) \
+            or re.search(r'current (\d+) x (\d+)', out)
+        if m:
+            return int(m[1]), int(m[2])
+    except OSError:
+        pass
+    return 1920, 1080
 
 
 def out_size(bw, bh, choice):
@@ -252,19 +369,20 @@ def prepare_obs(s):
         def src(kind, name, settings):
             return {'id': kind, 'versioned_id': kind, 'name': name, 'uuid': str(uuid.uuid4()), 'settings': settings,
                     'enabled': True}
-        display = src('monitor_capture', 'Clip Display', {'capture_cursor': True})
-        game = src('game_capture', 'Clip Game', {'capture_mode': 'any_fullscreen'})
+        display = src(SCREEN_SRC, 'Clip Display', {'capture_cursor': True} if WIN else {'show_cursor': True})
+        # Windows also hooks fullscreen games; on Linux (X11) the screen capture already sees them
+        shown = [display, src('game_capture', 'Clip Game', {'capture_mode': 'any_fullscreen'})] if WIN else [display]
         items = [{'name': x['name'], 'source_uuid': x['uuid'], 'id': i + 1, 'visible': True, 'locked': True,
                   'pos': {'x': 0, 'y': 0}, 'scale': {'x': 1, 'y': 1}, 'bounds_type': 2,
                   'bounds': {'x': primary_size()[0], 'y': primary_size()[1]}, 'align': 5}
-                 for i, x in enumerate([display, game])]
-        desk = src('wasapi_output_capture', 'Desktop Audio', {'device_id': 'default'})
-        mic = src('wasapi_input_capture', 'Mic/Aux', {'device_id': 'default'})
+                 for i, x in enumerate(shown)]
+        desk = src(DESK_SRC, 'Desktop Audio', {'device_id': 'default'})
+        mic = src(MIC_SRC, 'Mic/Aux', {'device_id': 'default'})
         for a in (desk, mic):
             a['mixers'] = 255
         json.dump({'name': 'Clipper', 'current_scene': 'Clipper', 'current_program_scene': 'Clipper',
                    'scene_order': [{'name': 'Clipper'}], 'groups': [],
-                   'sources': [src('scene', 'Clipper', {'id_counter': 2, 'items': items}), display, game],
+                   'sources': [src('scene', 'Clipper', {'id_counter': len(shown), 'items': items}), *shown],
                    'DesktopAudioDevice1': desk, 'AuxAudioDevice1': mic}, open(COLLECTION, 'w', encoding='utf-8'))
     os.makedirs(os.path.dirname(WS_CFG), exist_ok=True)
     try:
@@ -383,12 +501,12 @@ class Obs(threading.Thread):
                 self.call(lambda c: c.set_profile_parameter(cat, key, val))
                 restart.append(key)
         # Screen and size
-        self.screens = self.items('Clip Display', 'monitor_id')
+        self.screens = self.items('Clip Display', SCREEN_PROP)
         ids = [v for _, v in self.screens]
         screen = s['screen'] if s['screen'] in ids else next(
             (v for n, v in self.screens if 'Primary' in n), ids[0] if ids else '')
-        if self.call(lambda c: c.get_input_settings('Clip Display').input_settings.get('monitor_id')) != screen:
-            self.call(lambda c: c.set_input_settings('Clip Display', {'monitor_id': screen}, True))
+        if self.call(lambda c: c.get_input_settings('Clip Display').input_settings.get(SCREEN_PROP)) != screen:
+            self.call(lambda c: c.set_input_settings('Clip Display', {SCREEN_PROP: screen}, True))
         name = next((n for n, v in self.screens if v == screen), '')
         m = re.search(r'(\d+)x(\d+)', name)
         bw, bh = (int(m[1]), int(m[2])) if m else primary_size()
@@ -435,23 +553,30 @@ class Obs(threading.Thread):
             before = None
         try:
             self.call(lambda c: c.save_replay_buffer())
-            for _ in range(50):
-                path = self.call(lambda c: c.get_last_replay_buffer_replay().saved_replay_path)
-                if path and path != before:
-                    break
-                time.sleep(0.1)
-            log(f'clip saved ({source}): {path}')
-            if self.app.settings['chime']:
-                winsound.PlaySound(CHIME_OK, winsound.SND_FILENAME | winsound.SND_ASYNC)
-            self.app.clip_saved()
-            if self.app.settings['compress_clips'] and path and path != before:  # never re-compress an old clip
-                compress_clip(path)
-                self.app.ui.put(('clips', None))
         except Exception as e:
             log(f'save failed: {e!r}')
-            winsound.PlaySound(CHIME_FAIL, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            play(CHIME_FAIL)
             self.app.status('save_failed')
             self.app.ui.put(('toast', False))
+            return
+        if self.app.settings['chime']:  # OBS took the order: say so now, writing the file can take a while
+            play(CHIME_OK)
+        self.app.clip_saved()
+        path = None
+        try:
+            for _ in range(1200):  # up to 2 min: a busy PC can take a while to write a long clip
+                p = self.call(lambda c: c.get_last_replay_buffer_replay().saved_replay_path)
+                if p and p != before:  # never take (and re-compress) the previous clip
+                    path = p
+                    break
+                time.sleep(0.1)
+        except Exception as e:
+            log(f'waiting for the clip: {e!r}')
+        log(f'clip saved ({source}): {path or "not written after 2 min"}')
+        self.app.ui.put(('clips', None))
+        if path and self.app.settings['compress_clips']:
+            compress_clip(path)
+            self.app.ui.put(('clips', None))
 
 
 # ---------- voice ----------
@@ -514,16 +639,20 @@ class App:
         self.root.configure(bg=BG)
         self.root.protocol('WM_DELETE_WINDOW', self.hide)
         try:
-            self.root.iconbitmap(os.path.join(BASE, 'icon.ico'))
+            if WIN:
+                self.root.iconbitmap(os.path.join(BASE, 'icon.ico'))
+            else:
+                self.root.iconphoto(True, tk.PhotoImage(file=os.path.join(BASE, 'icon.png')))
         except tk.TclError:
             pass
         self.style()
-        try:  # dark title bar to match (Windows 10 2004+ / 11)
-            self.root.update_idletasks()
-            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(ctypes.c_int(1)), 4)
-        except OSError:
-            pass
+        if WIN:  # dark title bar to match (Windows 10 2004+ / 11); on Linux the desktop theme draws it
+            try:
+                self.root.update_idletasks()
+                hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(ctypes.c_int(1)), 4)
+            except OSError:
+                pass
         self.vars = {}
         self.build()
         if background:
@@ -572,8 +701,10 @@ class App:
             elif kind == 'lists':
                 self.refresh_lists()
             elif kind == 'hotkey':
-                self.hotkey_note.configure(text='' if val else 'That key is taken by another app (NVIDIA overlay '
-                                                               'uses Alt+F10). Pick another one.')
+                problem = ('That key is taken by another app (NVIDIA overlay uses Alt+F10). Pick another one.'
+                           if WIN else 'The hotkey needs an X11 session (Linux Mint XFCE is one). Voice and the '
+                                       'buttons still work.')
+                self.hotkey_note.configure(text='' if val else problem)
             elif kind == 'show':
                 self.show()
             elif kind == 'toast' and self.settings['popup']:
@@ -600,12 +731,13 @@ class App:
                  bg=CARD, fg=MUTED, font=('Segoe UI', 9)).pack(anchor='w')
         t.update_idletasks()
         t.geometry(f'+{t.winfo_screenwidth() - t.winfo_reqwidth() - 24}+24')
-        try:  # no focus steal, no taskbar button, click-through
-            hwnd = int(t.wm_frame(), 16)
-            ex = ctypes.windll.user32.GetWindowLongW(hwnd, -20)
-            ctypes.windll.user32.SetWindowLongW(hwnd, -20, ex | 0x08000000 | 0x80 | 0x20)
-        except (OSError, ValueError):
-            pass
+        if WIN:  # no focus steal, no taskbar button, click-through (on X11 an override-redirect window already
+            try:  # never takes focus nor shows in the taskbar)
+                hwnd = int(t.wm_frame(), 16)
+                ex = ctypes.windll.user32.GetWindowLongW(hwnd, -20)
+                ctypes.windll.user32.SetWindowLongW(hwnd, -20, ex | 0x08000000 | 0x80 | 0x20)
+            except (OSError, ValueError):
+                pass
         def fade(step=0):
             if not t.winfo_exists():
                 return
@@ -715,7 +847,7 @@ class App:
         self.clips.column('size', width=80, anchor='e', stretch=False)
         self.clips.bind('<Double-1>', self.open_clip)
         self.clips.pack(fill='both', expand=True)
-        ttk.Button(home, text='Open clips folder', command=lambda: os.startfile(self.settings['folder'])) \
+        ttk.Button(home, text='Open clips folder', command=lambda: open_path(self.settings["folder"])) \
             .grid(row=3, column=0, sticky='w', pady=(10, 0))
 
         video = self.page(nb, 'Video')
@@ -761,7 +893,7 @@ class App:
         ttk.Label(ctl, text='Voice', style='H.TLabel').grid(row=2, column=0, sticky='w', pady=(16, 4))
         self.check(ctl, 'voice_fr', 'Say "clip ça" (French)').grid(row=3, column=0, columnspan=2, sticky='w')
         self.check(ctl, 'voice_en', 'Say "clip that" (English)').grid(row=4, column=0, columnspan=2, sticky='w')
-        ttk.Label(ctl, text='Voice listens on your Windows default microphone, offline. Nothing leaves your PC.',
+        ttk.Label(ctl, text='Voice listens on your default microphone, offline. Nothing leaves your PC.',
                   style='Muted.TLabel').grid(row=5, column=0, columnspan=2, sticky='w', pady=(4, 0))
         self.check(ctl, 'chime', 'Play a sound when a clip is saved').grid(row=6, column=0, columnspan=2,
                                                                          sticky='w', pady=(16, 0))
@@ -775,7 +907,8 @@ class App:
         ttk.Button(folder, text='Change…', command=self.pick_folder).pack(side='right')
         self.row(gen, 0, 'Clips folder', folder)
         self.startup_var = tk.BooleanVar(value=self.starts_with_windows())
-        ttk.Checkbutton(gen, text='Start with Windows (recommended, so you never miss a moment)',
+        ttk.Checkbutton(gen, text=f'Start {"with Windows" if WIN else "when you log in"} (recommended, so you '
+                                  'never miss a moment)',
                         variable=self.startup_var, command=self.toggle_startup).grid(row=1, column=0, columnspan=2,
                                                                                      sticky='w', pady=(12, 0))
         self.check(gen, 'compress_clips', 'Compress clips after saving to save space (no visible loss)') \
@@ -835,17 +968,19 @@ class App:
     def open_clip(self, _):
         sel = self.clips.selection()
         if sel:
-            os.startfile(sel[0])
+            open_path(sel[0])
 
     def capture_hotkey(self):
         self.hotkey_btn.configure(text='Press keys… (Esc cancels)')
         armed = [False]  # wait until every key is up, so the key that pressed the button isn't taken
         seen = [None, 0]  # the same combo 3 polls running: apps that tap Ctrl to tame Alt can't sneak one in
+        esc = (lambda: ctypes.windll.user32.GetAsyncKeyState(0x1B) & 0x8000) if WIN else lambda: self.hotkey.esc
+        held = keys_down if WIN else self.hotkey.combo
         def poll():
-            if ctypes.windll.user32.GetAsyncKeyState(0x1B) & 0x8000:  # Esc
+            if esc():
                 self.hotkey_btn.configure(text=self.settings['hotkey'])
                 return
-            combo = keys_down()
+            combo = held()
             seen[:] = [combo, seen[1] + 1 if combo == seen[0] else 1]
             if not armed[0]:
                 armed[0] = combo is None
@@ -867,6 +1002,8 @@ class App:
             self.refresh_clips()
 
     def starts_with_windows(self):
+        if not WIN:
+            return os.path.exists(AUTOSTART)
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
                 winreg.QueryValueEx(k, APP)
@@ -875,6 +1012,16 @@ class App:
             return False
 
     def toggle_startup(self):
+        if not WIN:  # a login item, the freedesktop way (XFCE: Session and Startup > Application Autostart)
+            if self.startup_var.get():
+                os.makedirs(os.path.dirname(AUTOSTART), exist_ok=True)
+                with open(AUTOSTART, 'w', encoding='utf-8') as f:
+                    f.write(f'[Desktop Entry]\nType=Application\nName={APP}\nIcon={os.path.join(BASE, "icon.png")}\n'
+                            f'Exec="{sys.executable}" "{os.path.abspath(__file__)}" --background\n'
+                            'X-GNOME-Autostart-enabled=true\n')
+            elif os.path.exists(AUTOSTART):
+                os.remove(AUTOSTART)
+            return
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
             if self.startup_var.get():
                 winreg.SetValueEx(k, APP, 0, winreg.REG_SZ, f'"{sys.executable}" --background')
@@ -886,13 +1033,18 @@ class App:
 
     def install_obs(self):
         if not messagebox.askyesno(APP, 'Install OBS Studio (free, about 150 MB) with Windows Package Manager? '
-                                        'Windows may ask for permission.'):
+                                        'Windows may ask for permission.' if WIN else
+                                        'Install OBS Studio (free) from its official PPA? Linux will ask for your '
+                                        'password.'):
             return
         self.install_btn.configure(text='Installing…', state='disabled')
         def go():
-            r = subprocess.run(['winget', 'install', '--id', 'OBSProject.OBSStudio', '-e', '--silent',
-                                '--accept-package-agreements', '--accept-source-agreements'], creationflags=NOWIN)
-            log(f'winget OBS install exit {r.returncode}')
+            # Linux: the official PPA, because Ubuntu/Mint's own obs-studio package lacks the websocket we drive OBS with
+            cmd = ['winget', 'install', '--id', 'OBSProject.OBSStudio', '-e', '--silent', '--accept-package-agreements',
+                   '--accept-source-agreements'] if WIN else \
+                ['pkexec', 'sh', '-c', 'add-apt-repository -y ppa:obsproject/obs-studio && apt-get install -y obs-studio']
+            r = subprocess.run(cmd, creationflags=NOWIN)
+            log(f'OBS install exit {r.returncode}')
             self.root.after(0, lambda: self.install_btn.configure(text='Install OBS Studio', state='normal'))
             if r.returncode != 0:
                 self.root.after(0, lambda: messagebox.showerror(APP, 'Installing OBS failed. Get it from '
@@ -939,6 +1091,10 @@ def selftest():
     assert parse_hotkey('Alt+1') == (1, 0x31) and VK_NAMES[0x31] == '1' and VK_NAMES[0x79] == 'F10'
     assert out_size(1920, 1080, '720p') == (1280, 720) and out_size(1920, 1080, '1440p') == (1920, 1080)
     assert out_size(2560, 1080, '720p') == (1706, 720)
+    assert parse_hotkey(DEFAULTS['hotkey'])
+    h = LinuxHotkey(lambda: 'Ctrl+Alt+C', None, None)
+    h.mods, h.key = {'Alt', 'Ctrl'}, 'C'
+    assert h.combo() == 'Ctrl+Alt+C' and parse_hotkey(h.combo()) == (3, ord('C'))
     import vosk
     vosk.SetLogLevel(-1)
     for model, phrase in PHRASES.values():
@@ -965,10 +1121,11 @@ def main():
             pass
         return
     server.listen()
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # sharp text, and real screen sizes
-    except OSError:
-        pass
+    if WIN:
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)  # sharp text, and real screen sizes
+        except OSError:
+            pass
     log(f'{APP} {VERSION} starting')
     App('--background' in sys.argv, server).root.mainloop()
 
